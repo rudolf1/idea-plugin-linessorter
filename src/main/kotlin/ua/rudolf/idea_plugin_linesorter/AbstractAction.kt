@@ -1,86 +1,97 @@
 package ua.rudolf.idea_plugin_linesorter
 
 import com.intellij.openapi.actionSystem.DataContext
-import com.intellij.openapi.editor.Document
+import com.intellij.openapi.editor.CaretState
 import com.intellij.openapi.editor.Editor
+import com.intellij.openapi.editor.LogicalPosition
 import com.intellij.openapi.editor.actionSystem.EditorWriteActionHandler
 import com.intellij.openapi.editor.actions.TextComponentEditorAction
-import java.util.*
-import java.util.function.Function
+import java.lang.Math.min
 
-open class AbstractAction(f: (List<String>) -> List<String>) : TextComponentEditorAction(Handler(f)) {
+data class SelectedLine(
+    val selectionRange: IntRange,
+    val selectionText: String,
+    val range: IntRange,
+    val text: String
+)
 
-    private class Handler(private val f: (List<String>) -> List<String>) : EditorWriteActionHandler() {
+open class AbstractAction(f: (List<SelectedLine>) -> List<Pair<String, SelectedLine?>>) :
+    TextComponentEditorAction(Handler(f)) {
+
+    private class Handler(private val f: (List<SelectedLine>) -> List<Pair<String, SelectedLine?>>) :
+        EditorWriteActionHandler() {
         override fun executeWriteAction(editor: Editor, dataContext: DataContext) {
-            val doc = editor.document
-            val (lines, start, end) =
-                if (editor.selectionModel.hasSelection()) {
-                    Triple(
-                        (editor.selectionModel.selectedText ?: "").split("\n"),
-                        editor.selectionModel.selectionStart,
-                        editor.selectionModel.selectionEnd
-                    )
-                } else {
-                    val text = doc.text.split("\n")
-                    if (text.last() == "")
-                        Triple(
-                            text.subList(0, text.size - 1),
-                            0,
-                            doc.textLength - 1
-                        )
-                    else
-                        Triple(
-                            text,
-                            0,
-                            doc.textLength
-                        )
-                }
+            val lines = extractLines(editor)
             val processedLines = f(lines)
-            editor.document.replaceString(start, end, processedLines.joinToString("\n"))
-        }
-
-        private fun ignoreLastEmptyLines(doc: Document, endLine: Int): Int {
-            var endLine = endLine
-            while (endLine >= 0) {
-                if (doc.getLineEndOffset(endLine) > doc.getLineStartOffset(endLine)) {
-                    return endLine
+            val replaceRange = lines.first().range
+            lines.filterIndexed { i, _ -> i != 0 }
+                .reversed()
+                .forEach {
+                    editor.document.replaceString(
+                        it.range.first,
+                        min(editor.document.textLength, it.range.last + 1),
+                        ""
+                    )
                 }
-                endLine--
-            }
-            return -1
+            editor.document.replaceString(
+                replaceRange.first,
+                replaceRange.last,
+                processedLines.joinToString("\n")
+            )
+            editor.selectionModel.removeSelection(true)
+            editor.caretModel.removeSecondaryCarets()
+            val firstLineNumber = editor.document.getLineNumber(replaceRange.first)
+            val caretState = processedLines.mapIndexed { i, x ->
+                val selection = x.second
+                if (selection != null) {
+                    val start = LogicalPosition(firstLineNumber + i, selection.selectionRange.first)
+                    val end = LogicalPosition(firstLineNumber + i, selection.selectionRange.last)
+                    CaretState(
+                        end,
+                        start,
+                        end
+                    )
+                } else null
+            }.filterNotNull()
+            editor.caretModel.caretsAndSelections = caretState
         }
 
-        private fun extractLines(doc: Document, startLine: Int, endLine: Int): List<String> {
-            val lines: MutableList<String> =
-                ArrayList(endLine - startLine)
-            for (i in startLine..endLine) {
-                val line = extractLine(doc, i)
-                lines.add(line)
+        private fun extractLines(editor: Editor): List<SelectedLine> {
+            val doc = editor.document
+            val selectedRangesInDoc = if (editor.selectionModel.blockSelectionStarts.isNotEmpty()) {
+                editor.selectionModel.blockSelectionStarts.zip(editor.selectionModel.blockSelectionEnds)
+                    .map { it.first until it.second }
+            } else {
+                doc.text
+                    .mapIndexed { i, v -> i to v }
+                    .filter { it.second == '\n' }
+                    .map { it.first }
+                    .zipWithNext { a, b -> a..b }
+                    .let {
+                        if (it.last().first == it.last().last) {
+                            it.subList(0, it.size - 1)
+                        } else {
+                            it
+                        }
+                    }
             }
-            return lines
-        }
 
-        private fun extractLine(doc: Document, lineNumber: Int): String {
-            val lineSeparatorLength = doc.getLineSeparatorLength(lineNumber)
-            val startOffset = doc.getLineStartOffset(lineNumber)
-            val endOffset = doc.getLineEndOffset(lineNumber) + lineSeparatorLength
-            var line = doc.charsSequence.subSequence(startOffset, endOffset).toString()
-            // If last line has no \n, add it one
-// This causes adding a \n at the end of file when sort is applied on whole file and the file does not end
-// with \n... This is fixed after.
-            if (lineSeparatorLength == 0) {
-                line += "\n"
+
+            return selectedRangesInDoc.map {
+                val lineNumbers = editor.document.getLineNumber(it.first)..editor.document.getLineNumber(it.last)
+                val fullTextRange =
+                    editor.document.getLineStartOffset(lineNumbers.first) until editor.document.getLineEndOffset(
+                        lineNumbers.last
+                    )
+                val fullText = editor.document.text.substring(fullTextRange).removeSuffix("\n")
+                val selection = editor.document.text.substring(it).removeSuffix("\n")
+                val textRangeWithCR = if (fullTextRange.last > editor.document.text.length) fullTextRange else IntRange(
+                    fullTextRange.start,
+                    fullTextRange.last + 1
+                )
+                val selectionRangeInLine = (it.start - textRangeWithCR.first)..(it.last - textRangeWithCR.first)
+                SelectedLine(selectionRangeInLine, selection, textRangeWithCR, fullText)
             }
-            return line
         }
-
-        private fun joinLines(lines: List<String>): StringBuilder {
-            val builder = StringBuilder()
-            for (line in lines) {
-                builder.append(line)
-            }
-            return builder
-        }
-
     }
 }

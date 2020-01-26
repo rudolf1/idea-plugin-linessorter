@@ -34,6 +34,12 @@
                     description="Unique with drop selected lines or whole file if selection is empty">
                 <keyboard-shortcut keymap="$default" first-keystroke="alt shift d"/>
             </action>
+            <action id="linessorter.group_by_selection"
+                    class="ua.rudolf.idea_plugin_linesorter.GroupBySelectionAction"
+                    text="Group By Selection"
+                    description="Group by selected text im pultiline mode">
+                <keyboard-shortcut keymap="$default" first-keystroke="alt shift g"/>
+            </action>
             <add-to-group group-id="EditMenu" anchor="last"/>
         </group>
     </actions>
